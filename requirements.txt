@@ -2,7 +2,7 @@ streamlit
 pillow
 opencv-python-headless
 paddleocr
-paddlepaddle==2.6.1
+paddlepaddle
 torch
 torchvision
 torchaudio
