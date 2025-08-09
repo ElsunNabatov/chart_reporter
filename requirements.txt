@@ -1,0 +1,10 @@
+streamlit
+pillow
+opencv-python-headless
+paddleocr
+paddlepaddle==2.6.1
+torch
+torchvision
+torchaudio
+transformers
+sentencepiece
