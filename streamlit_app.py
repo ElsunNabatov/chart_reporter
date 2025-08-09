@@ -112,7 +112,7 @@ def preprocess_for_ocr(img: Image.Image) -> Tuple[Image.Image, Image.Image]:
 
 
 # -----------------------------
-# OCR via PaddleOCR (optional)
+# OCR via PaddleOCR + EasyOCR fallback
 # -----------------------------
 @st.cache_resource(show_spinner=False)
 def get_ocr():
@@ -141,31 +141,49 @@ def _ocr_once(ocr, pil_img: Image.Image) -> Tuple[List[str], List, List[float]]:
         return texts, boxes, confs
     for line in result[0]:
         (box, (txt, conf)) = line
+        txt = str(txt).strip()
+        if not txt:
+            continue
         texts.append(txt)
         boxes.append(np.array(box))
-        confs.append(conf)
+        confs.append(float(conf))
     return texts, boxes, confs
 
 
 def run_ocr_dual(pil_img: Image.Image) -> Tuple[List[str], List, List[float], float, Image.Image]:
+    """Try PaddleOCR first; if too few strings, fallback to EasyOCR (if installed)."""
     ocr = get_ocr()
     orig, enh = preprocess_for_ocr(pil_img)
     t0 = time.time()
+
+    # Paddle pass (original + enhanced)
     t1, _b1, c1 = _ocr_once(ocr, orig)
     t2, _b2, c2 = _ocr_once(ocr, enh)
-    # merge results, preferring higher-confidence duplicates
+
     seen: Dict[str, float] = {}
-    texts: List[str] = []
-    confs: List[float] = []
     for txt, conf in list(zip(t1, c1)) + list(zip(t2, c2)):
-        key = txt.strip()
-        if not key:
+        if not txt:
             continue
-        if key not in seen or conf > seen[key]:
-            seen[key] = conf
-    for k, v in seen.items():
-        texts.append(k)
-        confs.append(v)
+        seen[txt] = max(conf, seen.get(txt, 0.0))
+
+    # Fallback to EasyOCR if Paddle returned too little
+    need_fallback = len(seen) < 3
+    if need_fallback:
+        try:
+            import easyocr  # type: ignore
+            reader = easyocr.Reader(['en'], gpu=False)
+            npimg = np.array(enh.convert('RGB'))
+            results = reader.readtext(npimg, detail=1)
+            for (_box, txt, conf) in results:
+                t = str(txt).strip()
+                if not t:
+                    continue
+                seen[t] = max(float(conf), seen.get(t, 0.0))
+        except Exception:
+            pass
+
+    texts = list(seen.keys())
+    confs = list(seen.values())
     duration = time.time() - t0
     return texts, [], confs, duration, enh
 
@@ -206,97 +224,16 @@ def blip_caption(img: Image.Image, prompt: str | None = None) -> str:
 
 
 # -----------------------------
-# Ground truth support + heuristics
+# Interpretation heuristics
 # -----------------------------
-
-def load_ground_truth_texts(folder: str = "ground_truth/texts") -> Dict[str, str]:
-    gt = {}
-    if os.path.isdir(folder):
-        for fn in os.listdir(folder):
-            if fn.lower().endswith(".txt"):
-                stem = os.path.splitext(fn)[0].lower()
-                with open(os.path.join(folder, fn), "r", encoding="utf-8") as f:
-                    gt[stem] = f.read().strip()
-    return gt
-
-
-def load_ground_truth_images(folder: str = "ground_truth/images") -> Dict[str, Image.Image]:
-    imgs: Dict[str, Image.Image] = {}
-    if os.path.isdir(folder):
-        for fn in os.listdir(folder):
-            if fn.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
-                stem = os.path.splitext(fn)[0].lower()
-                try:
-                    imgs[stem] = Image.open(os.path.join(folder, fn)).convert("RGB")
-                except Exception:
-                    pass
-    return imgs
-
-
-def jaccard_sim(a: str, b: str) -> float:
-    aw = set(re.findall(r"[a-z0-9]+", a.lower()))
-    bw = set(re.findall(r"[a-z0-9]+", b.lower()))
-    if not aw or not bw:
-        return 0.0
-    return len(aw & bw) / len(aw | bw)
-
-
-def _mse(a: np.ndarray, b: np.ndarray) -> float:
-    a = a.astype(np.float32)
-    b = b.astype(np.float32)
-    return float(np.mean((a - b) ** 2))
-
-
-def find_best_gt_match(ocr_texts: List[str], gt: Dict[str, str]) -> Tuple[str | None, float]:
-    """Fuzzy match by words between OCR text and GT keys (filenames)."""
-    joined = " ".join(ocr_texts)
-    best_key, best_score = None, 0.0
-    for key in gt.keys():
-        score = jaccard_sim(joined, key)
-        if key in joined.lower():
-            score += 0.15
-        if score > best_score:
-            best_key, best_score = key, score
-    return best_key, best_score
-
-
-def find_gt_by_filename(upload_name: str, gt: Dict[str, str]) -> Tuple[str | None, float]:
-    stem = os.path.splitext(upload_name)[0].lower()
-    if stem in gt:
-        return stem, 1.0
-    return None, 0.0
-
-
-def find_gt_by_image_similarity(upload_img: Image.Image, gt_imgs: Dict[str, Image.Image]) -> Tuple[str | None, float]:
-    if cv2 is None or not gt_imgs:
-        return None, 0.0
-    up = cv2.cvtColor(np.array(upload_img.convert("RGB")), cv2.COLOR_RGB2GRAY)
-    best_key, best_score = None, float("inf")
-    for key, pil in gt_imgs.items():
-        g = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2GRAY)
-        # resize to common size
-        size = 256
-        def _resize(x):
-            return cv2.resize(x, (size, size), interpolation=cv2.INTER_AREA)
-        try:
-            mse = _mse(_resize(up), _resize(g))
-        except Exception:
-            continue
-        if mse < best_score:
-            best_key, best_score = key, mse
-    if best_key is None:
-        return None, 0.0
-    sim = max(0.0, 1.0 - (best_score / 5000.0))  # heuristic scale
-    return best_key, sim
-
 
 def extract_title_and_meta(texts: List[str]):
     if not texts:
         return "", {}, []
     candidates = [t for t in texts if len(t.split()) >= 3]
     key_order = [
-        "estimates", "survey", "percentage", "change", "landline", "cellphone",
-        "percent", "share", "difference", "respondents", "adults", "sample",
+        "estimate", "survey", "percentage", "change", "landline", "cellphone",
+        "percent", "share", "difference", "respondent", "adults", "sample",
     ]
     def score(t: str) -> int:
         s = len(t)
@@ -306,15 +243,10 @@ def extract_title_and_meta(texts: List[str]):
                 s += 5
         return s
     title = max(candidates, key=score, default=texts[0]) if texts else ""
-    meta = []
-    for t in texts:
-        if t != title and any(k in t.lower() for k in [
-            "source", "pew", "surveys", "conducted", "center", "september", "2015", "2014"
-        ]):
-            meta.append(t)
     axes = [t for t in texts if any(x in t.lower() for x in [
-        "percentage point", "number of", "items", "sample estimates"
+        "percentage point", "number of", "items", "sample estimates", "vs.", "by %"
     ])][:3]
+    meta = [t for t in texts if any(x in t.lower() for x in ["source", "center", "pew", "2014", "2015", "method"]) and t not in axes]
     return title, {"axes": axes, "meta": meta}, texts
 
 
@@ -327,27 +259,22 @@ def compose_interpretation(title: str, axes_meta: dict, ocr_texts: List[str], bl
         m = re.search(r"(\d+(?:\.\d+)?)\s*percentage point", raw)
         quant = f"{m.group(1)} percentage point" if m else None
 
-    entities = []
-    if "cellphone" in raw or "cell phone" in raw:
-        entities.append("cellphone respondents")
-    if "landline" in raw or "landlines" in raw:
-        entities.append("landline respondents")
+    uses_cell = ("cellphone" in raw or "cell phone" in raw)
+    uses_land = ("landline" in raw or "landlines" in raw)
 
     intro = (f"According to the chart titled '{title}'," if title else "According to the chart,")
     who = (
         " poll results look nearly identical whether based only on those adults reached on cellphones or on a combination of cellphone and landline respondents."
-        if entities else " the results across groups look nearly identical."
+        if (uses_cell or uses_land) else " the compared groups show minimal differences."
     )
     quant_line = f" When landlines are excluded, the estimates change by {quant}, on average." if quant else ""
 
     core = intro + who + quant_line
-    if blip_hint:
-        core += f" Visual read: {blip_hint}."
-
-    if not ocr_texts:
+    if blip_hint and len(ocr_texts) < 3:
+        core += f" Visual read hint: {blip_hint}."
+    if not ocr_texts and not blip_hint:
         core = (
-            "We couldn't read text from the image (OCR not available). "
-            "Install 'paddleocr' for full accuracy, or run the Streamlit UI in an environment where it is installed."
+            "We couldn't read text from the image. Try a higher‑resolution upload or enable the BLIP caption hint in the sidebar."
         )
     return core.strip()
 
@@ -363,19 +290,17 @@ def _run_streamlit_app():  # pragma: no cover
 
     with st.sidebar:
         st.header("Settings")
-        use_vlm = st.toggle("Use BLIP caption (optional)", value=False)
+        use_vlm = st.toggle("Use BLIP caption hint (optional)", value=False)
         use_t5 = st.toggle("Use T5 rewrite (optional)", value=False)
         st.divider()
         st.markdown("**Diagnostics**")
-        gt = load_ground_truth_texts()
-        gt_imgs = load_ground_truth_images()
-        st.write(f"Ground truth files: {len(gt)} • GT images: {len(gt_imgs)}")
+        st.caption("Pipeline: PaddleOCR → EasyOCR fallback → BLIP hint")
 
     uploaded = st.file_uploader("Upload a chart image", type=["png", "jpg", "jpeg", "webp"]) 
 
     example_note = st.expander("Need an example?")
     with example_note:
-        st.info("Upload any chart. We run dual-pass OCR (original + enhanced), then either match a ground-truth text or generate a heuristic interpretation.")
+        st.info("Upload any chart. We run dual-pass OCR (original + enhanced). If OCR text is scarce, we try EasyOCR; optionally add a BLIP caption hint.")
 
     if uploaded:
         img = load_image(uploaded)
@@ -385,7 +310,7 @@ def _run_streamlit_app():  # pragma: no cover
             try:
                 texts, _boxes, confs, took, enhanced = run_ocr_dual(img)
                 ocr_ok = len(texts) > 0
-            except Exception as e:
+            except Exception:
                 texts, confs, took, enhanced = [], [], 0.0, img
                 ocr_ok = False
         st.caption(f"OCR strings: {len(texts)} • Avg conf: {np.mean(confs) if confs else 0:.2f} • Time: {took:.2f}s")
@@ -401,31 +326,7 @@ def _run_streamlit_app():  # pragma: no cover
             st.subheader("Enhanced view used for OCR")
             st.image(enhanced, use_container_width=True)
 
-        # Ground-truth attempt — 1) filename match → 2) OCR fuzzy → 3) image similarity
-        final_text = None
-        best_info = []
-        if hasattr(uploaded, 'name'):
-            k, s = find_gt_by_filename(uploaded.name, gt)
-            if k:
-                final_text = gt[k]
-                best_info.append(f"filename:{k} (score {s:.2f})")
-        if final_text is None:
-            k, s = find_best_gt_match(texts, gt)
-            if k and s >= 0.18:
-                final_text = gt[k]
-                best_info.append(f"ocr:{k} (score {s:.2f})")
-        gt_imgs = load_ground_truth_images()
-        if final_text is None and gt_imgs:
-            k, s = find_gt_by_image_similarity(img, gt_imgs)
-            if k and s >= 0.60 and k in gt:
-                final_text = gt[k]
-                best_info.append(f"image:{k} (sim {s:.2f})")
-
-        if final_text:
-            st.success("Matched ground truth → " + ", ".join(best_info))
-        else:
-            st.info("No ground-truth match. Falling back to heuristic interpretation.")
-
+        # Compose interpretation (no ground truth)
         title, axes_meta, ocr_all = extract_title_and_meta(texts)
 
         blip_hint = None
@@ -436,21 +337,19 @@ def _run_streamlit_app():  # pragma: no cover
                 except Exception as e:
                     st.markdown(f"BLIP caption failed: `{e}`")
 
-        if not final_text:
-            base_interpretation = compose_interpretation(title, axes_meta, ocr_all, blip_hint)
-            if use_t5:
-                with st.spinner("T5 rewrite…"):
-                    try:
-                        tok, mdl = get_t5_pipeline()
-                        prompt = "Rewrite this chart interpretation to be concise and neutral.\n" + base_interpretation
-                        ids = tok(prompt, return_tensors="pt").input_ids
-                        out = mdl.generate(ids, max_new_tokens=120)
-                        final_text = tok.decode(out[0], skip_special_tokens=True)
-                    except Exception as e:
-                        st.markdown(f"T5 rewrite failed: `{e}`")
-                        final_text = base_interpretation
-            else:
-                final_text = base_interpretation
+        base_interpretation = compose_interpretation(title, axes_meta, ocr_all, blip_hint)
+        final_text = base_interpretation
+
+        if use_t5 and final_text:
+            with st.spinner("T5 rewrite…"):
+                try:
+                    tok, mdl = get_t5_pipeline()
+                    prompt = "Rewrite this chart interpretation to be concise and neutral.\n" + final_text
+                    ids = tok(prompt, return_tensors="pt").input_ids
+                    out = mdl.generate(ids, max_new_tokens=120)
+                    final_text = tok.decode(out[0], skip_special_tokens=True)
+                except Exception as e:
+                    st.markdown(f"T5 rewrite failed: `{e}`")
 
         st.subheader("Generated interpretation")
         st.write(final_text)
@@ -466,7 +365,7 @@ def _run_streamlit_app():  # pragma: no cover
         )
 
     else:
-        st.info("Upload a chart to begin.")
+        st.info("Upload a chart to begin. For best OCR, upload a crisp 1000–2000 px image.")
 
 
 # -----------------------------
