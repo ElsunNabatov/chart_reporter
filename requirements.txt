@@ -1,10 +1,10 @@
 streamlit
 pillow
 opencv-python-headless
-paddleocr
-paddlepaddle
-torch
-torchvision
-torchaudio
-transformers
-sentencepiece
+paddlepaddle==2.6.1
+paddleocr==3.1.0
+transformers==4.44.2
+sentencepiece==0.1.99
+torch==2.3.1
+torchvision==0.18.1
+torchaudio==2.3.1
