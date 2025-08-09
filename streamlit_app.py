@@ -1,23 +1,3 @@
-"""
-Filename: streamlit_app.py
-Chart-to-Text: Streamlit UI with CLI fallback
--------------------------------------------------
-This single file runs both on Streamlit Cloud and locally.
-- If Streamlit is available → full UI.
-- If not → CLI mode (for sandboxes without Streamlit).
-It also avoids previous shim errors and handles missing heavy deps gracefully.
-
-Run locally:
-  streamlit run streamlit_app.py
-
-CLI (no Streamlit):
-  python streamlit_app.py
-  CHART_IMAGE=/path/to/chart.png python streamlit_app.py
-
-Tests:
-  RUN_TESTS=1 python streamlit_app.py
-"""
-
 from __future__ import annotations
 import io
 import os
