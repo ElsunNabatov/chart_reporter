@@ -1,22 +1,21 @@
 """
+Filename: streamlit_app.py
 Chart-to-Text: Streamlit UI with CLI fallback
 -------------------------------------------------
-This file supports two modes:
-1) Streamlit UI (when `streamlit` is installed).
-2) CLI fallback (when `streamlit` is unavailable). The previous error
-   `SyntaxError: keyword argument repeated: markdown` came from a duplicate
-   `markdown` attribute in the Streamlit shim. This has been fixed.
+This single file runs both on Streamlit Cloud and locally.
+- If Streamlit is available → full UI.
+- If not → CLI mode (for sandboxes without Streamlit).
+It also avoids previous shim errors and handles missing heavy deps gracefully.
 
-Run:
-  # UI (if you have Streamlit)
-  streamlit run app.py
+Run locally:
+  streamlit run streamlit_app.py
 
-  # CLI (no Streamlit needed)
-  python app.py
-  CHART_IMAGE=/path/to/chart.png python app.py
+CLI (no Streamlit):
+  python streamlit_app.py
+  CHART_IMAGE=/path/to/chart.png python streamlit_app.py
 
 Tests:
-  RUN_TESTS=1 python app.py
+  RUN_TESTS=1 python streamlit_app.py
 """
 
 from __future__ import annotations
@@ -28,7 +27,7 @@ from types import SimpleNamespace
 from typing import List
 
 # --- Optional deps (import guarded) -------------------------------------------------
-try:  # OpenCV is optional in CLI; we handle None below
+try:  # OpenCV is optional; degrade gracefully if absent
     import cv2  # type: ignore
 except Exception:  # pragma: no cover
     cv2 = None  # type: ignore
@@ -64,7 +63,7 @@ except Exception:  # pragma: no cover
         header=_noop,
         toggle=lambda *a, **k: False,
         divider=_noop,
-        markdown=_noop,  # <-- single definition (fixed)
+        markdown=_noop,  # single definition (no duplicate)
         checkbox=lambda *a, **k: False,
         file_uploader=lambda *a, **k: None,
         expander=lambda *a, **k: SimpleNamespace(__enter__=lambda *a, **k: None, __exit__=lambda *a, **k: False),
