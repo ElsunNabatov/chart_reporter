@@ -1,27 +1,3 @@
-"""
-Filename: streamlit_app.py
-Chart-to-Text (OCR → Interpretation) — Streamlit
--------------------------------------------------
-Changes in this version:
-- Fixed Streamlit deprecation: use `use_container_width=True`.
-- Stronger OCR: dual-pass preprocessing (original + enhanced) and merged results.
-- Ground truth support: place `.txt` files under `ground_truth/texts/` to auto-match; optional `ground_truth/images/` for organization.
-- Fuzzy match without extra deps (Jaccard + keyword boost). Shows top match + score.
-- Diagnostics in the sidebar: ground-truth count, OCR timing, average confidence.
-- No paid APIs; optional BLIP/T5 kept but off by default.
-
-Repo layout expected
---------------------
-- streamlit_app.py
-- requirements.txt
-- runtime.txt
-- ground_truth/
-    ├─ texts/
-    │   ├─ landline_histogram.txt
-    │   └─ ...
-    └─ images/   (optional)
-"""
-
 from __future__ import annotations
 import io
 import os
@@ -233,7 +209,7 @@ def blip_caption(img: Image.Image, prompt: str | None = None) -> str:
 # Ground truth support + heuristics
 # -----------------------------
 
-def def load_ground_truth_texts(folder: str = "ground_truth/texts") -> Dict[str, str]:
+def load_ground_truth_texts(folder: str = "ground_truth/texts") -> Dict[str, str]:
     gt = {}
     if os.path.isdir(folder):
         for fn in os.listdir(folder):
@@ -299,16 +275,15 @@ def find_gt_by_image_similarity(upload_img: Image.Image, gt_imgs: Dict[str, Imag
     for key, pil in gt_imgs.items():
         g = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2GRAY)
         # resize to common size
-        h = 256
+        size = 256
         def _resize(x):
-            return cv2.resize(x, (h, h), interpolation=cv2.INTER_AREA)
+            return cv2.resize(x, (size, size), interpolation=cv2.INTER_AREA)
         try:
             mse = _mse(_resize(up), _resize(g))
         except Exception:
             continue
         if mse < best_score:
             best_key, best_score = key, mse
-    # Convert MSE to a pseudo-similarity in [0,1] (lower MSE → higher sim)
     if best_key is None:
         return None, 0.0
     sim = max(0.0, 1.0 - (best_score / 5000.0))  # heuristic scale
@@ -395,7 +370,6 @@ def _run_streamlit_app():  # pragma: no cover
         gt = load_ground_truth_texts()
         gt_imgs = load_ground_truth_images()
         st.write(f"Ground truth files: {len(gt)} • GT images: {len(gt_imgs)}")
-f"Ground truth files: {len(gt)}")
 
     uploaded = st.file_uploader("Upload a chart image", type=["png", "jpg", "jpeg", "webp"]) 
 
@@ -427,26 +401,24 @@ f"Ground truth files: {len(gt)}")
             st.subheader("Enhanced view used for OCR")
             st.image(enhanced, use_container_width=True)
 
-        # Ground-truth attempt — 1) filename exact match → 2) OCR fuzzy → 3) image similarity
+        # Ground-truth attempt — 1) filename match → 2) OCR fuzzy → 3) image similarity
         final_text = None
         best_info = []
-        # 1) filename stem match
         if hasattr(uploaded, 'name'):
             k, s = find_gt_by_filename(uploaded.name, gt)
             if k:
                 final_text = gt[k]
                 best_info.append(f"filename:{k} (score {s:.2f})")
-        # 2) OCR fuzzy match
         if final_text is None:
             k, s = find_best_gt_match(texts, gt)
             if k and s >= 0.18:
                 final_text = gt[k]
                 best_info.append(f"ocr:{k} (score {s:.2f})")
-        # 3) image similarity (very rough; helps when names don't overlap)
-        if final_text is None and 'gt_imgs' in locals() and gt_imgs:
+        gt_imgs = load_ground_truth_images()
+        if final_text is None and gt_imgs:
             k, s = find_gt_by_image_similarity(img, gt_imgs)
-            if k and s >= 0.60:
-                final_text = gt.get(k)
+            if k and s >= 0.60 and k in gt:
+                final_text = gt[k]
                 best_info.append(f"image:{k} (sim {s:.2f})")
 
         if final_text:
@@ -548,7 +520,6 @@ if __name__ == "__main__":  # pragma: no cover
         if not img_path or not os.path.exists(img_path):
             print(json.dumps({"error": "Set CHART_IMAGE to an image path."}, indent=2))
         else:
-            # Minimal CLI
             img = load_image(img_path)
             texts, *_ = run_ocr_dual(img)
             title, axes_meta, ocr_all = extract_title_and_meta(texts)
