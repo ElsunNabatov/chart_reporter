@@ -3,7 +3,6 @@ pillow>=10
 opencv-python-headless>=4.10
 paddlepaddle==2.6.1
 paddleocr==3.1.0
-# Optional (only if you want BLIP/T5 toggles working in the cloud):
 transformers==4.44.2
 sentencepiece==0.1.99
 torch==2.3.1
